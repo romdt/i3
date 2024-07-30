@@ -456,6 +456,53 @@ static size_t x_get_border_rectangles(Con *con, xcb_rectangle_t rectangles[4]) {
 }
 
 /*
+ * Count nested icons in the container tree.
+ *
+ */
+static void con_num_nested_icons(Con *con, int* count) {
+    /* end of recursion */
+    if (con_is_leaf(con)) {
+        if (con->window && con->window->icon) {
+            ++(*count);
+        }
+        return;
+    }
+
+    /* 2) count children icons */
+    Con *child;
+    TAILQ_FOREACH (child, &(con->nodes_head), nodes) {
+        con_num_nested_icons(child, count);
+    }
+}
+
+/*
+ * Draws title bar icons.
+ *
+ */
+static void x_draw_title_bar_icons(int* level, Con *con, surface_t *surface, int x, int y, int width, int height) {
+    /* end of recursion */
+    if (con_is_leaf(con)) {
+        if (con->window && con->window->icon) {
+            draw_util_image(
+                con->window->icon,
+                surface,
+                x + (*level) * width,
+                y,
+                width,
+                height);
+            ++(*level);
+        }
+        return;
+    }
+
+    /* 2) draw children icons */
+    Con *child;
+    TAILQ_FOREACH (child, &(con->nodes_head), nodes) {
+        x_draw_title_bar_icons(level, child, surface, x, y, width, height);
+    }
+}
+
+/*
  * Draws the decoration of the given container onto its parent.
  *
  */
@@ -684,11 +731,13 @@ void x_draw_decoration(Con *con) {
     }
 
     i3String *title = NULL;
+    int num_nested_icons = 0;
     if (win == NULL) {
+        con_num_nested_icons(con, &num_nested_icons);
         if (con->title_format == NULL) {
             char *_title;
             char *tree = con_get_tree_representation(con);
-            sasprintf(&_title, "i3: %s", tree);
+            sasprintf(&_title, "i3: %s (%d)", tree, num_nested_icons);
             free(tree);
 
             title = i3string_from_utf8(_title);
@@ -707,8 +756,8 @@ void x_draw_decoration(Con *con) {
      * available vertical space. */
     int icon_size = max(0, con->deco_rect.height - logical_px(2));
     int icon_padding = logical_px(max(1, con->window_icon_padding));
-    int total_icon_space = icon_size + 2 * icon_padding;
-    const bool has_icon = (con->window_icon_padding > -1) && win && win->icon && (total_icon_space < deco_width);
+    int total_icon_space = icon_size * max(num_nested_icons, 1) + 2 * icon_padding;
+    bool has_icon = (num_nested_icons || (con->window_icon_padding > -1 && win && win->icon)) && total_icon_space < deco_width;
     if (!has_icon) {
         icon_size = icon_padding = total_icon_space = 0;
     }
@@ -754,8 +803,10 @@ void x_draw_decoration(Con *con) {
                    con->deco_rect.y + text_offset_y,
                    deco_width - mark_width - 2 * title_padding - total_icon_space);
     if (has_icon) {
-        draw_util_image(
-            win->icon,
+        int depth = 0;
+        x_draw_title_bar_icons(
+            &depth,
+            con,
             dest_surface,
             con->deco_rect.x + icon_offset_x,
             con->deco_rect.y + logical_px(1),
